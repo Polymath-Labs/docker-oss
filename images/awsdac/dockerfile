@@ -1,0 +1,28 @@
+# ---------- Build stage ----------
+    FROM golang:1.25-alpine AS builder
+
+    # Optional but useful for TLS etc.
+    RUN apk add --no-cache ca-certificates
+    
+    WORKDIR /src
+    
+    # No source needed; we just go-install the CLI
+    ENV CGO_ENABLED=0 \
+        GOOS=linux \
+        GOARCH=amd64
+    
+    # Install the CLI tool
+    RUN go install github.com/awslabs/diagram-as-code/cmd/awsdac@latest
+    
+    # ---------- Runtime stage ----------
+    FROM scratch
+    
+    # Bring in certs if the tool ever makes HTTPS calls
+    COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+    
+    # Bring in the compiled binary
+    COPY --from=builder /go/bin/awsdac /usr/local/bin/awsdac
+    
+    ENTRYPOINT ["/usr/local/bin/awsdac"]
+    CMD ["--help"]
+    
