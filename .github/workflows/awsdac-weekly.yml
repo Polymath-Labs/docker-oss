@@ -1,0 +1,80 @@
+name: awsdac – weekly build
+
+# Every Monday at 05:00 UTC (00:00 ET)
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch: # allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get latest awsdac release tag
+        id: version
+        run: |
+          TAG=$(curl -sS "https://api.github.com/repos/awslabs/diagram-as-code/releases/latest" \
+                | jq -r '.tag_name')
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::Could not fetch latest release tag"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Found latest awsdac release: $TAG"
+
+      - name: Check if tag already published
+        id: check
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          # Check if this tag already exists on Docker Hub
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "https://hub.docker.com/v2/repositories/polymathlabs/awsdac/tags/${TAG}/")
+          if [ "$STATUS" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG already exists on Docker Hub – skipping build"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG not found on Docker Hub – will build"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: images/awsdac
+          file: images/awsdac/dockerfile
+          push: true
+          build-args: |
+            AWSDAC_VERSION=${{ steps.version.outputs.tag }}
+          tags: |
+            polymathlabs/awsdac:${{ steps.version.outputs.tag }}
+            polymathlabs/awsdac:latest
+          platforms: linux/amd64,linux/arm64
+
+      - name: Summary
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if [ "${{ steps.check.outputs.skip }}" = "true" ]; then
+            echo "### Skipped – \`$TAG\` already published" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Published \`polymathlabs/awsdac:$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "Also tagged as \`polymathlabs/awsdac:latest\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "Platforms: linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"
+          fi
